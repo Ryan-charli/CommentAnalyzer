@@ -8,36 +8,36 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 
-// CommentExtractor: 负责从文件中提取注释，支持目录递归和多语言
+// Extracting comments from a file
 public class CommentExtractor {
-    // 定义一个线程池，使用4个线程同时处理多个文件
+    // multi-threaded processing
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
-    // 根据文件扩展名检测编程语言，返回语言标识符字符串
+    // Detects the programming language from the file extension, returns a language identifier string.
     private String detectLanguage(File file) {
         String fileName = file.getName().toLowerCase();
         if (fileName.endsWith(".java")) return "java";
         if (fileName.endsWith(".c") || fileName.endsWith(".h")) return "c";
         if (fileName.endsWith(".py")) return "python";
-        return "unknown"; // 不支持的文件类型
+        return "unknown"; // Unsupported file types
     }
 
-    // 从文件中提取注释，返回注释列表
+    // Extract from file, return list
     public List<String> extractComments(File file) throws IOException {
-        String language = detectLanguage(file);  // 自动检测语言
+        String language = detectLanguage(file);  // Auto-detect language
         if ("unknown".equals(language)) {
-            System.out.println("不支持的文件类型：" + file.getName());
+            System.out.println("Unsupported file types：" + file.getName());
             return new ArrayList<>();
         }
 
-        // 根据语言获取注释符号
+        // Get annotation symbols by language
         String[] symbols = LanguageConfig.getCommentSymbols(language);
         List<String> comments = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
             String line;
             boolean inMultiLineComment = false;
 
-            // 循环读取每一行，检查是否为注释
+            // Loop through each line to check for comments
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
 
@@ -55,17 +55,17 @@ public class CommentExtractor {
         return comments;
     }
 
-    // 递归地从目录中提取所有文件的注释
+    // Recursively extract all file comments from a directory
     public List<String> extractCommentsFromDirectory(File dir) throws IOException, InterruptedException {
         List<String> comments = new ArrayList<>();
         List<Future<List<String>>> futures = new ArrayList<>();
 
         for (File file : dir.listFiles()) {
             if (file.isDirectory()) {
-                comments.addAll(extractCommentsFromDirectory(file));  // 递归处理子目录
+                comments.addAll(extractCommentsFromDirectory(file));  // Handling subdirectories
             } else {
                 Future<List<String>> future = executor.submit(() -> extractComments(file));
-                futures.add(future);  // 异步处理文件
+                futures.add(future);  // Asynchronous processing of documents
             }
         }
 
@@ -73,7 +73,7 @@ public class CommentExtractor {
             try {
                 comments.addAll(future.get());
             } catch (ExecutionException e) {
-                System.err.println("处理文件时出错: " + e.getMessage());
+                System.err.println("Error while processing file: " + e.getMessage());
             }
         }
 

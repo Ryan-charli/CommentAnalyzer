@@ -32,11 +32,11 @@ public class MainUI {
         fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         if (fileChooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
             File directory = fileChooser.getSelectedFile();
-            String language = "java"; // 设置为目标语言
+            String language = "java"; // Set as target language
             analyzer = new CommentAnalyzer(language);
             analyzer.analyzeDirectory(directory);
 
-            // 显示分析结果
+            // Display of analysis results
             analyzer.displayComments();
         }
     }

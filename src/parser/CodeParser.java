@@ -10,13 +10,13 @@ public class CodeParser {
     private String multiLineCommentStartSymbol;
     private String multiLineCommentEndSymbol;
 
-    // 构造函数：初始化 CodeParser 并根据语言设置注释标记
+    // initialise
     public CodeParser(String language) {
         this.language = language.toLowerCase();
         setCommentSymbols();
     }
 
-    // 根据语言设置注释标记
+    // Annotation tags according to language
     private void setCommentSymbols() {
         switch (language) {
             case "java":
@@ -32,14 +32,14 @@ public class CodeParser {
                 multiLineCommentEndSymbol = null;
                 break;
             default:
-                singleLineCommentSymbol = "//"; // 默认单行注释符号
+                singleLineCommentSymbol = "//"; // Default single-line comment symbols
                 multiLineCommentStartSymbol = "/*";
                 multiLineCommentEndSymbol = "*/";
                 break;
         }
     }
 
-    // 从文件中提取注释
+    // Extracting comments from files
     public List<String> extractComments(File file) throws IOException {
         List<String> comments = new ArrayList<>();
         BufferedReader reader = new BufferedReader(new FileReader(file));
@@ -49,19 +49,19 @@ public class CodeParser {
         while ((line = reader.readLine()) != null) {
             line = line.trim();
 
-            // 多行注释处理
+            // Multi-line comment handling
             if (inMultiLineComment) {
                 comments.add(line);
                 if (line.contains(multiLineCommentEndSymbol)) {
                     inMultiLineComment = false;
                 }
             }
-            // 检查是否为多行注释的开始
+            // Check for multi-line comments
             else if (multiLineCommentStartSymbol != null && line.contains(multiLineCommentStartSymbol)) {
                 inMultiLineComment = true;
                 comments.add(line);
             }
-            // 检查是否为单行注释
+            // Checking for single line comments
             else if (line.startsWith(singleLineCommentSymbol)) {
                 comments.add(line);
             }
