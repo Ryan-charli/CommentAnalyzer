@@ -28,8 +28,8 @@ public class CodeParser {
                 break;
             case "python":
                 singleLineCommentSymbol = "#";
-                multiLineCommentStartSymbol = null;
-                multiLineCommentEndSymbol = null;
+                multiLineCommentStartSymbol = "/*";
+                multiLineCommentEndSymbol = "*/";
                 break;
             default:
                 singleLineCommentSymbol = "//"; // Default single-line comment symbols
