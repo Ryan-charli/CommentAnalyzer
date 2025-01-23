@@ -1,18 +1,43 @@
-## Getting Started
+MIT License
 
-Welcome to the VS Code Java world. Here is a guideline to help you get started to write Java code in Visual Studio Code.
+# Code Comment Analyzer
+A tool for analyzing code comments and code quality in Java projects.
 
-## Folder Structure
+## Features
+- Comment extraction and analysis
+- Code complexity metrics
+- Comment quality scoring
+- Code smell detection
+- Export analysis reports
 
-The workspace contains two folders by default, where:
+## Requirements
+- Java 23
+- Maven 3.9.9
 
-- `src`: the folder to maintain sources
-- `lib`: the folder to maintain dependencies
+## Installation
+```bash
+git clone [repository-url]
+cd commentanalyzer
+mvn clean install
+```
 
-Meanwhile, the compiled output files will be generated in the `bin` folder by default.
+## Usage
+1. Run `CommentAnalyzerApp`
+2. Click "Select Directory" to choose Java project
+3. View analysis results
+4. Export report using "Export Report" button
 
-> If you want to customize the folder structure, open `.vscode/settings.json` and update the related settings there.
+## Metrics
+- Comment density
+- Code complexity
+- Documentation completeness
+- Code smells
 
-## Dependency Management
-
-The `JAVA PROJECTS` view allows you to manage your dependencies. More details can be found [here](https://github.com/microsoft/vscode-java-dependency#manage-dependencies).
+## Project Structure
+```
+src/main/java/
+├── ai/
+├── analysis/
+├── parser/
+└── ui/
+```
