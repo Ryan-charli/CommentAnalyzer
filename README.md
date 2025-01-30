@@ -1,8 +1,21 @@
 MIT License
 
+
 # Code Comment Analyzer
 A tool for analyzing code comments and code quality in Java projects.
 
+## Updates:
+**Optimized Comment Analysis**
+- Removed code analysis functionality
+- Improved multi-line comment handling logic
+- Reduced memory usage
+**New Features**
+- Added multi-threading support to improve analysis efficiency
+- Implemented progress display for better visualization
+- Added summary information display, including:
+* Total number of files 
+* Total number of comments
+* Average quality score
 ## Features
 - Comment extraction and analysis
 - Code complexity metrics
@@ -41,3 +54,8 @@ src/main/java/
 ├── parser/
 └── ui/
 ```
+## Code Comment Analysis Standard
+**A code comment quality analyzer based on academic research:**
+ * 1. Steidl et al. (2013) "Quality Analysis of Source Code Comments" - ICPC 2013
+ * 2. Khamis et al. (2010) "Automatic Quality Assessment of Source Code Comments" - NLDB 2010
+ * 3. Padioleau et al. (2009) "Documenting and Automating Collateral Evolution in Linux Device Drivers" - EuroSys 2009
