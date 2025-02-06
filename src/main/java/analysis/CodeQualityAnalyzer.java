@@ -1,223 +1,220 @@
 package analysis;
 
-/**
- * A code comment quality analyzer based on academic research:
- * 1. Steidl et al. (2013) "Quality Analysis of Source Code Comments" - ICPC 2013
- * 2. Khamis et al. (2010) "Automatic Quality Assessment of Source Code Comments" - NLDB 2010
- * 3. Padioleau et al. (2009) "Documenting and Automating Collateral Evolution in Linux Device Drivers" - EuroSys 2009
- */
+import org.json.JSONObject;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.regex.Pattern;
+
 public class CodeQualityAnalyzer {
-    // Constants based on Steidl et al.'s empirical study
-    private static final int MIN_COMMENT_LENGTH = 3;  // Minimum words for meaningful comment
-    private static final int MAX_COMMENT_LENGTH = 100; // Maximum words for concise comment
-    
-    /**
-     * Analyzes the quality of a code comment based on multiple dimensions from academic research.
-     * Score breakdown based on Steidl et al. (2013):
-     * - Coherence & Completeness (40%): Information adequacy and self-containment
-     * - Consistency (30%): Adherence to documentation standards
-     * - Language Quality (30%): Readability and clarity
-     */
-    public double analyzeCommentQuality(String comment) {
-        if (isCodeLine(comment) || comment.trim().isEmpty()) {
-            return 0.0;
-        }
+    private final HttpClient client;
+    private final String ollamaEndpoint;
+    private final CommentTypeAnalyzer typeAnalyzer;
+    private final boolean useAI;
+    private String prevCodeLine = "";
+    private boolean isBeforeClass = true;
+    private boolean isAfterClassBeforeFields = false;
+    private boolean isAfterFieldsBeforeMethods = false;
 
-        String cleanComment = cleanCommentSymbols(comment);
-        double score = 0.0;
-
-        // Coherence & Completeness (40%)
-        score += evaluateCoherenceAndCompleteness(cleanComment) * 0.4;
-
-        // Consistency (30%)
-        score += evaluateConsistency(cleanComment) * 0.3;
-
-        // Language Quality (30%)
-        score += evaluateLanguageQuality(cleanComment) * 0.3;
-
-        return score;
+    public CodeQualityAnalyzer(boolean useAI) {
+        this.useAI = useAI;
+        this.client = HttpClient.newHttpClient();
+        this.ollamaEndpoint = "http://localhost:11434/api/generate";
+        this.typeAnalyzer = new CommentTypeAnalyzer();
     }
 
-    /**
-     * Evaluates comment coherence and completeness based on Khamis et al. (2010)
-     * Metrics:
-     * - Information content density
-     * - Domain term usage
-     * - Self-containment
-     */
-    private double evaluateCoherenceAndCompleteness(String comment) {
-        double score = 0.0;
-        String[] words = comment.split("\\s+");
+    public QualityAnalysisResult analyzeCommentQuality(String comment, String nextCodeLine, boolean isFirst) {
+        if (comment == null || comment.trim().isEmpty()) {
+            return new QualityAnalysisResult(0.0, "Empty comment");
+        }
+
+        updateContextState(nextCodeLine);
         
-        // Information density (based on Khamis et al.)
-        if (words.length >= MIN_COMMENT_LENGTH && words.length <= MAX_COMMENT_LENGTH) {
-            score += 0.4;
+        CommentTypeAnalyzer.CommentAnalysisResult typeResult = typeAnalyzer.analyzeCommentType(
+            comment, prevCodeLine, nextCodeLine, isFirst,
+            isBeforeClass, isAfterClassBeforeFields, isAfterFieldsBeforeMethods
+        );
+
+        double baseScore = calculateBaseScore(comment, typeResult);
+        
+        if (useAI) {
+            try {
+                double aiScore = getAIScore(comment, nextCodeLine, typeResult.getType());
+                return new QualityAnalysisResult(
+                    (baseScore * 0.6 + aiScore * 0.4) * 5.0,
+                    String.format("Type: %s, %s, Base: %.2f, AI: %.2f", 
+                        typeResult.getType().getDescription(),
+                        typeResult.getReason(),
+                        baseScore * 5.0,
+                        aiScore * 5.0)
+                );
+            } catch (Exception e) {
+                return new QualityAnalysisResult(baseScore * 5.0,
+                    String.format("Type: %s, %s, Score based on rules", 
+                        typeResult.getType().getDescription(),
+                        typeResult.getReason()));
+            }
         }
 
-        // Domain term presence (e.g., technical terms, method references)
-        if (containsDomainTerms(comment)) {
-            score += 0.3;
-        }
-
-        // Self-containment (complete sentence or proper structure)
-        if (isSelfContained(comment)) {
-            score += 0.3;
-        }
-
-        return score;
+        return new QualityAnalysisResult(baseScore * 5.0,
+            String.format("Type: %s, %s", 
+                typeResult.getType().getDescription(),
+                typeResult.getReason()));
     }
 
-    /**
-     * Evaluates comment consistency based on Steidl et al. (2013)
-     * Metrics:
-     * - JavaDoc structure compliance
-     * - Naming convention consistency
-     * - Formatting standards
-     */
+    private void updateContextState(String currentLine) {
+        if (currentLine.contains("class ") || currentLine.contains("interface ")) {
+            isBeforeClass = false;
+            isAfterClassBeforeFields = true;
+            isAfterFieldsBeforeMethods = false;
+        } else if (currentLine.matches(".*\\s+\\w+\\s*=.*|.*private.*|.*public.*|.*protected.*")) {
+            isAfterClassBeforeFields = false;
+        } else if (currentLine.contains("(") && currentLine.contains(")")) {
+            isAfterFieldsBeforeMethods = true;
+        }
+        prevCodeLine = currentLine;
+    }
+
+    private double calculateBaseScore(String comment, CommentTypeAnalyzer.CommentAnalysisResult typeResult) {
+        double typeBaseScore = typeResult.getBaseScore();
+        double coherenceScore = evaluateCoherenceAndCompleteness(comment, typeResult.getType()) * 0.4;
+        double consistencyScore = evaluateConsistency(comment) * 0.3;
+        double languageScore = evaluateLanguageQuality(comment) * 0.3;
+
+        return (typeBaseScore * 0.4 + coherenceScore + consistencyScore + languageScore) / 2.0;
+    }
+
+    private double getAIScore(String comment, String codeContext, CommentTypeAnalyzer.CommentType type) throws Exception {
+        String typeSpecificPrompt = switch (type) {
+            case METHOD_COMMENT -> """
+                Analyze this method comment (score 1-5):
+                1. Does it describe the method's purpose?
+                2. Are parameters documented?
+                3. Is return value explained?
+                4. Are exceptions documented?
+                5. Is the explanation clear and accurate?
+                """;
+            case CLASS_COMMENT -> """
+                Analyze this class comment (score 1-5):
+                1. Does it explain class purpose?
+                2. Are class responsibilities clear?
+                3. Is inheritance/implementation explained?
+                4. Are important class features documented?
+                5. Is it well-structured and complete?
+                """;
+            case FILE_COMMENT -> """
+                Analyze this file-level comment (score 1-5):
+                1. Does it describe file purpose?
+                2. Is copyright/license info included?
+                3. Are package details explained?
+                4. Is version/author information present?
+                5. Is it properly formatted?
+                """;
+            default -> """
+                Analyze this code comment (score 1-5):
+                1. Is it clear and understandable?
+                2. Does it add valuable information?
+                3. Is it accurate and up-to-date?
+                4. Does it follow good practices?
+                5. Is it properly formatted?
+                """;
+        };
+
+        String prompt = String.format("""
+            %s
+            
+            Comment:
+            %s
+            
+            Related Code:
+            %s
+            
+            Respond with only a number 1-5.
+            """, typeSpecificPrompt, comment, codeContext);
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(ollamaEndpoint))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
+                .put("model", "deepseek-r1:7b")
+                .put("prompt", prompt)
+                .put("temperature", 0.1)
+                .put("stream", false)
+                .toString()))
+            .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        JSONObject jsonResponse = new JSONObject(response.body());
+        String responseText = jsonResponse.getString("response").trim();
+        
+        try {
+            return Double.parseDouble(responseText) / 5.0;
+        } catch (NumberFormatException e) {
+            return 0.5;
+        }
+    }
+
+    // [Previous evaluation methods remain the same]
+
+    public static class QualityAnalysisResult {
+        private final double score;
+        private final String details;
+
+        public QualityAnalysisResult(double score, String details) {
+            this.score = score;
+            this.details = details;
+        }
+
+        public double getScore() { return score; }
+        public String getDetails() { return details; }
+    }
+    private double evaluateCoherenceAndCompleteness(String comment, CommentTypeAnalyzer.CommentType type) {
+        double score = 0.0;
+
+        switch (type) {
+            case METHOD_COMMENT -> {
+                if (comment.contains("@param")) score += 0.3;
+                if (comment.contains("@return")) score += 0.3;
+                if (comment.contains("@throws")) score += 0.2;
+                if (comment.length() > 10) score += 0.2;
+            }
+            case CLASS_COMMENT -> {
+                if (comment.contains("@author")) score += 0.2;
+                if (comment.contains("@version")) score += 0.2;
+                if (comment.length() > 20) score += 0.3;
+                if (comment.contains("class") || comment.contains("interface")) score += 0.3;
+            }
+            case FILE_COMMENT -> {
+                if (comment.contains("Licensed")) score += 0.4;
+                if (comment.contains("copyright")) score += 0.3;
+                if (comment.length() > 30) score += 0.3;
+            }
+            default -> {
+                if (comment.length() > 5) score += 0.5;
+                if (containsTechnicalTerms(comment)) score += 0.5;
+            }
+        }
+        return Math.min(score, 1.0);
+    }
+
     private double evaluateConsistency(String comment) {
         double score = 0.0;
-
-        // JavaDoc structure (if applicable)
-        if (isJavadocComment(comment)) {
-            if (hasValidJavadocStructure(comment)) {
-                score += 0.4;
-            }
-        } else {
-            score += 0.4; // Non-Javadoc comments aren't penalized
-        }
-
-        // Consistent formatting
-        if (hasConsistentFormatting(comment)) {
-            score += 0.3;
-        }
-
-        // Naming consistency
-        if (hasConsistentNaming(comment)) {
-            score += 0.3;
-        }
-
+        if (comment.startsWith("/*") || comment.startsWith("/**")) score += 0.3;
+        if (comment.endsWith("*/")) score += 0.3;
+        if (!comment.contains("TODO") && !comment.contains("FIXME")) score += 0.4;
         return score;
     }
 
-    /**
-     * Evaluates language quality based on established readability metrics
-     * Using criteria from Khamis et al. (2010)
-     */
     private double evaluateLanguageQuality(String comment) {
         double score = 0.0;
-
-        // Grammatical correctness
-        if (hasCorrectGrammar(comment)) {
-            score += 0.4;
-        }
-
-        // Readability (based on simplified Flesch Reading Ease)
-        if (isReadable(comment)) {
-            score += 0.3;
-        }
-
-        // No code smells or anti-patterns
-        if (!containsDocumentationSmells(comment)) {
-            score += 0.3;
-        }
-
+        if (comment.matches("[A-Z].*")) score += 0.3;
+        if (!comment.contains("!!!!") && !comment.contains("????")) score += 0.3;
+        if (comment.length() < 200) score += 0.4;
         return score;
     }
 
-    private boolean containsDomainTerms(String comment) {
-        // Implementation based on Khamis et al.'s technical term detection
-        String[] technicalPatterns = {
-            "\\b[A-Z][a-zA-Z]*(?:Exception|Error)\\b", // Exception classes
-            "\\b[a-z]+(?:get|set|is|has|build|create|find)[A-Z][a-zA-Z]*\\b", // Method references
-            "\\b[A-Z][a-zA-Z]*(?:DAO|DTO|Service|Controller|Repository)\\b", // Common patterns
-            "@(?:param|return|throws|see)\\b" // JavaDoc tags
-        };
-        
-        for (String pattern : technicalPatterns) {
-            if (comment.matches(".*" + pattern + ".*")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isSelfContained(String comment) {
-        // Complete sentence check based on Steidl et al.
-        return comment.matches("[A-Z].*[.!?]\\s*$") || // Complete sentence
-               comment.matches("@\\w+\\s+[^\\s].*"); // Valid tag with description
-    }
-
-    private boolean hasValidJavadocStructure(String comment) {
-        return comment.matches("\\s*\\/\\*\\*.*\\*\\/\\s*") && // Proper start/end
-               (comment.contains("@param") || 
-                comment.contains("@return") ||
-                comment.contains("@throws") ||
-                comment.matches(".*[A-Z].*[.!?]\\s*")); // Contains tags or description
-    }
-
-    private boolean hasConsistentFormatting(String comment) {
-        return comment.matches("\\s*\\*?\\s+[^\\s].*") && // Proper indentation
-               !comment.contains("\t"); // No tabs
-    }
-
-    private boolean hasConsistentNaming(String comment) {
-        // Check for consistent use of terms based on Steidl et al.
-        return !comment.matches(".*\\b((?i)colour|color)\\b.*") && // Mixed spellings
-               !comment.matches(".*\\b((?i)param[s]?|parameter[s]?)\\b.*"); // Mixed terms
-    }
-
-    private boolean hasCorrectGrammar(String comment) {
-        // Basic grammar checks
-        return comment.matches("[A-Z].*") && // Starts with capital
-               !comment.matches(".*\\s+[.!?]") && // No space before punctuation
-               !comment.matches(".*[,.]\\w.*"); // Space after punctuation
-    }
-
-    private boolean isReadable(String comment) {
-        String[] words = comment.split("\\s+");
-        // Simplified readability check based on word length
-        int longWords = 0;
-        for (String word : words) {
-            if (word.length() > 12) { // Very long words reduce readability
-                longWords++;
-            }
-        }
-        return words.length >= 3 && words.length <= 25 && // Reasonable length
-               ((double) longWords / words.length) < 0.3; // Not too many long words
-    }
-
-    private boolean containsDocumentationSmells(String comment) {
-        String[] smells = {
-            "TODO", "FIXME", "XXX", // Task tags
-            "\\b(?i)obvious\\b", "\\b(?i)clearly\\b", "\\b(?i)simply\\b", // Vague terms
-            "\\b(?i)note\\b", "\\b(?i)notice\\b", // Unnecessary markers
-            "\\b[A-Z]{4,}\\b" // All caps words
-        };
-        
-        for (String smell : smells) {
-            if (comment.matches(".*" + smell + ".*")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String cleanCommentSymbols(String comment) {
-        return comment.replaceAll("^\\s*[/\\*]+\\s*", "") // Remove start symbols
-                     .replaceAll("\\s*\\*+/$", "") // Remove end symbols
-                     .replaceAll("^\\s*\\*\\s*", "") // Remove line starts
-                     .trim();
-    }
-
-    private boolean isCodeLine(String line) {
-        return line.matches(".*(\\{|\\}|\\=|\\;|\\(.*\\)|" +
-                          "\\b(catch|try|if|else|return|private|public|protected)\\b).*");
-    }
-
-    private boolean isJavadocComment(String comment) {
-        return comment.trim().startsWith("/**") || 
-               comment.contains("@param") ||
-               comment.contains("@return") ||
-               comment.contains("@throws");
+    private boolean containsTechnicalTerms(String comment) {
+        return comment.matches("(?i).*(method|class|function|return|parameter|variable|object|interface).*");
     }
 }
