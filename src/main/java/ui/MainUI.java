@@ -3,6 +3,7 @@ package ui;
 import analysis.CommentAnalyzer;
 import analysis.CommentLocation;
 import parser.CommentExtractor;
+import analysis.CodeQualityAnalyzer;
 
 import javax.swing.*;
 import java.awt.*;
@@ -11,6 +12,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.*;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -25,16 +27,15 @@ public class MainUI {
     private final ExecutorService executorService;
     private final Map<String, List<CommentLocation>> allResults;
 
-    // Constants for batch processing
     private static final int BATCH_SIZE = 100;
     private static final int TEXT_BUFFER_LIMIT = 1000000;
 
     public MainUI() {
-        analyzer = new CommentAnalyzer("java");
-        executorService = Executors.newFixedThreadPool(6); // Increased thread pool size
+        analyzer = new CommentAnalyzer(); // Updated constructor call
+        executorService = Executors.newFixedThreadPool(6);
         allResults = new ConcurrentHashMap<>();
         
-        frame = new JFrame("Comment Analyzer");
+        frame = new JFrame("Multi-Language Comment Analyzer");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(800, 600);
         
@@ -77,6 +78,7 @@ public class MainUI {
         frame.setVisible(true);
     }
 
+    // Method for selecting directory to analyze
     private void selectDirectory() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
@@ -87,6 +89,7 @@ public class MainUI {
         }
     }
 
+    // Method to start the analysis process
     private void startAnalysis(File directory) {
         allResults.clear();
         outputArea.setText("Analysis in progress...\n");
@@ -95,7 +98,8 @@ public class MainUI {
         
         CompletableFuture.runAsync(() -> {
             try {
-                CommentExtractor extractor = new CommentExtractor("java");
+                // Create an extractor that auto-detects language
+                CommentExtractor extractor = new CommentExtractor("");
                 extractor.setProgressListener((progress, status) -> {
                     SwingUtilities.invokeLater(() -> {
                         progressBar.setValue(progress);
@@ -125,89 +129,52 @@ public class MainUI {
 
     private void generateAndDisplayReport() {
         SwingUtilities.invokeLater(() -> {
-            statusLabel.setText("Generating report...");
+            statusLabel.setText("Generating basic report...");
             
-            CompletableFuture.supplyAsync(() -> {
-                int totalComments = 0;
-                double totalQuality = 0;
-                
-                for (List<CommentLocation> comments : allResults.values()) {
-                    for (CommentLocation comment : comments) {
-                        totalComments++;
-                        totalQuality += analyzer.analyzeCommentQuality(comment.getContent());
-                    }
+            // First generate basic report
+            StringBuilder report = new StringBuilder();
+            report.append("Basic Analysis Report\n");
+            report.append("====================\n\n");
+            
+            int totalComments = 0;
+            double totalQuality = 0;
+            
+            for (List<CommentLocation> comments : allResults.values()) {
+                for (CommentLocation comment : comments) {
+                    totalComments++;
+                    totalQuality += analyzer.getCommentQuality(
+                        comment.getContent(), "", false).getScore();
                 }
+            }
+            
+            report.append(String.format("""
+                Summary:
+                Total files with comments: %d
+                Total comments: %d
+                Average quality score: %.2f
                 
-                return new ReportStats(totalComments, totalQuality, allResults.size());
-            }, executorService).thenAcceptAsync(stats -> {
-                StringBuilder report = new StringBuilder();
-                report.append("Comment Analysis Report\n");
-                report.append("=====================\n\n");
-                report.append(String.format("""
-                    Summary:
-                    Total files with comments: %d
-                    Total comments: %d
-                    Average quality score: %.2f
-                    
-                    Base Directory: %s
-                    
-                    """, stats.fileCount, stats.totalComments,
-                    stats.totalComments > 0 ? stats.totalQuality / stats.totalComments : 0,
-                    currentDirectory.getAbsolutePath()));
-
-                outputArea.setText(report.toString());
+                Base Directory: %s
                 
-                List<String> sortedPaths = new ArrayList<>(allResults.keySet());
-                Collections.sort(sortedPaths);
-                
-                int totalBatches = (sortedPaths.size() + BATCH_SIZE - 1) / BATCH_SIZE;
-                AtomicInteger processedBatches = new AtomicInteger(0);
-                
-                for (int i = 0; i < sortedPaths.size(); i += BATCH_SIZE) {
-                    int end = Math.min(i + BATCH_SIZE, sortedPaths.size());
-                    List<String> batch = sortedPaths.subList(i, end);
-                    
-                    StringBuilder batchReport = new StringBuilder();
-                    for (String filePath : batch) {
-                        List<CommentLocation> comments = allResults.get(filePath);
-                        if (comments == null || comments.isEmpty()) continue;
-
-                        batchReport.append("File: ").append(filePath).append("\n");
-                        batchReport.append("Number of comments: ").append(comments.size()).append("\n\n");
-
-                        for (CommentLocation comment : comments) {
-                            double quality = analyzer.analyzeCommentQuality(comment.getContent());
-                            batchReport.append(String.format("Line %d: (Quality Score: %.2f)\n",
-                                comment.getLineNumber(),
-                                quality));
-                            batchReport.append(comment.getContent()).append("\n\n");
-                        }
-                        batchReport.append("-------------------\n\n");
-                    }
-
-                    int currentBatch = processedBatches.incrementAndGet();
-                    int progress = (currentBatch * 100) / totalBatches;
-                    
-                    SwingUtilities.invokeLater(() -> {
-                        reportProgressBar.setValue(progress);
-                        if (outputArea.getText().length() < TEXT_BUFFER_LIMIT) {
-                            outputArea.append(batchReport.toString());
-                        }
-                    });
-                }
-
+                """, allResults.size(), totalComments,
+                totalComments > 0 ? totalQuality / totalComments : 0,
+                currentDirectory.getAbsolutePath()));
+            
+            outputArea.setText(report.toString());
+            
+            // Then start AI analysis
+            statusLabel.setText("Starting AI analysis...");
+            analyzer.startAIAnalysis(aiReport -> {
                 SwingUtilities.invokeLater(() -> {
-                    statusLabel.setText("Analysis complete - Found " + stats.totalComments + " comments");
-                    reportProgressBar.setValue(100);
-                    
-                    if (outputArea.getText().length() >= TEXT_BUFFER_LIMIT) {
-                        outputArea.append("\n... Report truncated. Please export to see full results ...\n");
-                    }
+                    outputArea.append("\nAI Analysis Results\n");
+                    outputArea.append("==================\n\n");
+                    outputArea.append("Language: " + aiReport.get("language") + "\n");
+                    outputArea.append(aiReport.get("aiAnalysis").toString() + "\n\n");
                 });
-            }, executorService);
+            });
         });
     }
 
+    // Inner class for storing report statistics
     private static class ReportStats {
         final int totalComments;
         final double totalQuality;
@@ -220,6 +187,7 @@ public class MainUI {
         }
     }
 
+    // Method for exporting the report to a file
     private void exportReport() {
         if (allResults.isEmpty() || outputArea.getText().equals("Analysis in progress...\n")) {
             JOptionPane.showMessageDialog(frame, "No report to export");
@@ -247,7 +215,8 @@ public class MainUI {
                         writer.println("Number of comments: " + comments.size() + "\n");
 
                         for (CommentLocation comment : comments) {
-                            double quality = analyzer.analyzeCommentQuality(comment.getContent());
+                            double quality = analyzer.getCommentQuality(
+                                comment.getContent(), "", false).getScore();
                             writer.printf("Line %d: (Quality Score: %.2f)%n",
                                 comment.getLineNumber(),
                                 quality);
@@ -270,6 +239,7 @@ public class MainUI {
         }
     }
 
+    // Method for shutting down the application
     public void shutdown() {
         try {
             executorService.shutdown();

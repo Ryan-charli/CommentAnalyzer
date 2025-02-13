@@ -1,129 +1,216 @@
 package analysis;
 
 import parser.CodeParser;
+import parser.LanguageConfig;
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class CommentAnalyzer {
-    private CodeParser parser;
-    private List<String> comments;
+    private final CodeParser parser;
+    private final Map<String, Map<CommentTypeAnalyzer.CommentType, List<CommentLocation>>> categorizedCommentsByLanguage;
+    private final BatchProcessor batchProcessor;
+    private final ExecutorService aiExecutor;
+    private final CommentTypeAnalyzer typeAnalyzer;
     private final CodeQualityAnalyzer qualityAnalyzer;
-    private final AIComparison aiComparison;
-    private final OllamaClient ollamaClient;
 
-    public CommentAnalyzer(String language) {
-        this.parser = new CodeParser(language);
-        this.comments = new ArrayList<>();
+    public CommentAnalyzer() {
+        this.parser = new CodeParser();
+        this.categorizedCommentsByLanguage = new ConcurrentHashMap<>();
+        this.batchProcessor = new BatchProcessor(20, 50, 2);
+        this.aiExecutor = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() / 2));
+        this.typeAnalyzer = new CommentTypeAnalyzer();
         this.qualityAnalyzer = new CodeQualityAnalyzer(true);
-        this.aiComparison = new AIComparison();
-        this.ollamaClient = new OllamaClient("http://localhost:11434");
     }
 
-    public double analyzeCommentQuality(String comment) {
-        return qualityAnalyzer.analyzeCommentQuality(comment, "", false).getScore();
+    public CodeQualityAnalyzer.QualityAnalysisResult getCommentQuality(
+            String comment, String nextCodeLine, boolean isFirstComment) {
+        return qualityAnalyzer.analyzeCommentQuality(comment, nextCodeLine, isFirstComment);
     }
-
-    public AnalysisResult analyzeCommentWithDetails(String comment, String nextCodeLine, boolean isFirst) {
-        CodeQualityAnalyzer.QualityAnalysisResult quality = 
-            qualityAnalyzer.analyzeCommentQuality(comment, nextCodeLine, isFirst);
-        
-        String aiGeneratedComment = ollamaClient.generateComment(nextCodeLine);
-        String comparisonResult = aiComparison.compareComments(
-            Arrays.asList(comment), aiGeneratedComment);
-
-        return new AnalysisResult(quality.getScore(), quality.getDetails(), comparisonResult);
-    }
-
+    
     public void analyzeFile(File file) {
         try {
-            List<CommentLocation> commentLocations = parser.extractCommentsWithLocations(file);
-            for (CommentLocation loc : commentLocations) {
-                comments.add(loc.getContent());
+            String detectedLanguage = LanguageConfig.detectLanguage(file.getName(), null);
+            if (detectedLanguage == null) {
+                System.err.println("Unsupported file type: " + file.getName());
+                return;
             }
-            System.out.println("File: " + file.getName() + " has " + commentLocations.size() + " comments.");
+
+            parser.setLanguage(detectedLanguage);
+            List<CommentLocation> commentLocations = parser.extractCommentsWithLocations(file);
+            
+            synchronized (categorizedCommentsByLanguage) {
+                categorizeComments(commentLocations, detectedLanguage);
+            }
+            
+            System.out.printf("File: %s (%s) has %d comments.%n", 
+                file.getName(), detectedLanguage, commentLocations.size());
+                    
         } catch (IOException e) {
             System.err.println("Error reading file: " + file.getName());
         }
     }
 
+    private void categorizeComments(List<CommentLocation> comments, String language) {
+        Map<CommentTypeAnalyzer.CommentType, List<CommentLocation>> languageComments = 
+            categorizedCommentsByLanguage.computeIfAbsent(language, _ -> new EnumMap<>(CommentTypeAnalyzer.CommentType.class));
+
+        for (CommentLocation comment : comments) {
+            CommentTypeAnalyzer.CommentAnalysisResult analysis = typeAnalyzer.analyzeCommentType(
+                comment.getContent(), "", "", comment.getLineNumber() == 1,
+                true, false, false
+            );
+            languageComments.computeIfAbsent(analysis.getType(), _ -> new ArrayList<>())
+                           .add(comment);
+        }
+    }
+
     public void analyzeDirectory(File directory) {
         if (directory.isDirectory()) {
-            for (File file : directory.listFiles()) {
-                if (file.isFile()) {
-                    analyzeFile(file);
-                }
-            }
+            Arrays.stream(directory.listFiles())
+                  .parallel()
+                  .forEach(file -> {
+                      if (file.isFile()) {
+                          String ext = getFileExtension(file.getName());
+                          if (LanguageConfig.isSupportedExtension(ext)) {
+                              analyzeFile(file);
+                          }
+                      } else if (file.isDirectory()) {
+                          analyzeDirectory(file);
+                      }
+                  });
         }
     }
 
-    public int getTotalCommentCount() {
-        return comments.size();
+    private String getFileExtension(String fileName) {
+        int lastDot = fileName.lastIndexOf('.');
+        return lastDot > 0 ? fileName.substring(lastDot) : "";
     }
 
-    public void displayComments() {
-        System.out.println("Total Comments: " + getTotalCommentCount());
-        double totalScore = 0;
-        
-        for (String comment : comments) {
-            double score = analyzeCommentQuality(comment);
-            totalScore += score;
-            System.out.printf("Comment: %s%nQuality Score: %.2f%n%n", 
-                comment, score);
-        }
-        
-        double averageScore = comments.isEmpty() ? 0 : totalScore / comments.size();
-        System.out.printf("Average Quality Score: %.2f%n", averageScore);
-    }
-
-    public void addComments(List<String> newComments) {
-        comments.addAll(newComments);
-    }
-
-    public Map<String, Object> getQualityReport() {
+    public Map<String, Object> getBasicReport() {
         Map<String, Object> report = new HashMap<>();
-        Map<String, CommentDetails> commentScores = new HashMap<>();
-        double totalScore = 0;
-        
-        for (String comment : comments) {
-            AnalysisResult result = analyzeCommentWithDetails(comment, "", false);
-            commentScores.put(comment, new CommentDetails(
-                result.getScore(),
-                result.getDetails(),
-                result.getAiComparison()
-            ));
-            totalScore += result.getScore();
-        }
-        
-        report.put("comments", commentScores);
-        report.put("averageScore", comments.isEmpty() ? 0 : totalScore / comments.size());
+        Map<String, Map<String, List<CommentAnalysis>>> commentsByLanguageAndType = processBasicAnalysis();
+        report.put("commentsByLanguageAndType", commentsByLanguageAndType);
+        report.put("totalCommentsByLanguage", getTotalCommentCounts());
+        report.put("analysisTime", new Date());
         return report;
     }
 
-    public static class AnalysisResult {
+    private Map<String, Map<String, List<CommentAnalysis>>> processBasicAnalysis() {
+        Map<String, Map<String, List<CommentAnalysis>>> result = new HashMap<>();
+        
+        for (String language : categorizedCommentsByLanguage.keySet()) {
+            Map<String, List<CommentAnalysis>> commentsByType = new HashMap<>();
+            Map<CommentTypeAnalyzer.CommentType, List<CommentLocation>> languageComments = 
+                categorizedCommentsByLanguage.get(language);
+
+            for (Map.Entry<CommentTypeAnalyzer.CommentType, List<CommentLocation>> entry : languageComments.entrySet()) {
+                List<CommentAnalysis> analyses = entry.getValue().stream()
+                    .map(comment -> {
+                        double basicScore = calculateBasicScore(comment);
+                        return new CommentAnalysis(comment, basicScore, 
+                            "Basic analysis score: " + String.format("%.2f", basicScore), null);
+                    })
+                    .collect(Collectors.toList());
+                commentsByType.put(entry.getKey().getDescription(), analyses);
+            }
+
+            result.put(language, commentsByType);
+        }
+
+        return result;
+    }
+
+    private double calculateBasicScore(CommentLocation comment) {
+        double score = 0.5;
+        String content = comment.getContent();
+        
+        if (content.length() > 10) score += 0.1;
+        if (content.length() > 50) score += 0.1;
+        if (content.matches("^\\s*[A-Z].*")) score += 0.1;
+        if (!content.contains("TODO") && !content.contains("FIXME")) score += 0.1;
+        if (content.contains("@param") || content.contains("@return")) score += 0.1;
+
+        return Math.min(score, 1.0) * 5.0; // Convert to 5-point scale
+    }
+
+    public void startAIAnalysis(Consumer<Map<String, Object>> callback) {
+        CompletableFuture.runAsync(() -> {
+            for (String language : categorizedCommentsByLanguage.keySet()) {
+                Map<CommentTypeAnalyzer.CommentType, List<CommentLocation>> languageComments = 
+                    categorizedCommentsByLanguage.get(language);
+                
+                for (List<CommentLocation> comments : languageComments.values()) {
+                    List<CommentLocation> highPriorityComments = comments.stream()
+                        .filter(this::isHighPriorityComment)
+                        .collect(Collectors.toList());
+
+                    if (!highPriorityComments.isEmpty()) {
+                        batchProcessor.submitBatch(highPriorityComments, result -> {
+                            callback.accept(createAIAnalysisReport(language, result));
+                        });
+                    }
+                }
+            }
+        }, aiExecutor);
+    }
+
+    private boolean isHighPriorityComment(CommentLocation comment) {
+        return comment.getContent().length() > 100 || // 只分析长注释
+               comment.getFileName().endsWith("Test.java"); // 或测试文件注释
+    }
+
+    private Map<String, Object> createAIAnalysisReport(String language, Map<String, Object> aiResult) {
+        Map<String, Object> report = new HashMap<>();
+        report.put("language", language);
+        report.put("aiAnalysis", aiResult);
+        report.put("analysisTime", new Date());
+        return report;
+    }
+
+    private Map<String, Integer> getTotalCommentCounts() {
+        return categorizedCommentsByLanguage.entrySet().stream()
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                e -> e.getValue().values().stream()
+                    .mapToInt(List::size)
+                    .sum()
+            ));
+    }
+
+    public void shutdown() {
+        batchProcessor.shutdown();
+        aiExecutor.shutdown();
+        try {
+            if (!aiExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                aiExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            aiExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public static class CommentAnalysis {
+        private final CommentLocation comment;
         private final double score;
         private final String details;
         private final String aiComparison;
 
-        public AnalysisResult(double score, String details, String aiComparison) {
+        public CommentAnalysis(CommentLocation comment, double score, 
+                             String details, String aiComparison) {
+            this.comment = comment;
             this.score = score;
             this.details = details;
             this.aiComparison = aiComparison;
         }
 
+        public CommentLocation getComment() { return comment; }
         public double getScore() { return score; }
         public String getDetails() { return details; }
         public String getAiComparison() { return aiComparison; }
-    }
-
-    private static class CommentDetails {
-        private final double score;
-        private final String details;
-        private final String aiComparison;
-
-        CommentDetails(double score, String details, String aiComparison) {
-            this.score = score;
-            this.details = details;
-            this.aiComparison = aiComparison;
-        }
+        
     }
 }

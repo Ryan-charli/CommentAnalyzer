@@ -1,15 +1,9 @@
 package analysis;
 
-import org.json.JSONObject;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.regex.Pattern;
 
 public class CodeQualityAnalyzer {
-    private final HttpClient client;
-    private final String ollamaEndpoint;
+    private final OllamaClient ollamaClient;
     private final CommentTypeAnalyzer typeAnalyzer;
     private final boolean useAI;
     private String prevCodeLine = "";
@@ -19,8 +13,7 @@ public class CodeQualityAnalyzer {
 
     public CodeQualityAnalyzer(boolean useAI) {
         this.useAI = useAI;
-        this.client = HttpClient.newHttpClient();
-        this.ollamaEndpoint = "http://localhost:11434/api/generate";
+        this.ollamaClient = new OllamaClient("http://localhost:11434");
         this.typeAnalyzer = new CommentTypeAnalyzer();
     }
 
@@ -85,90 +78,19 @@ public class CodeQualityAnalyzer {
         return (typeBaseScore * 0.4 + coherenceScore + consistencyScore + languageScore) / 2.0;
     }
 
-    private double getAIScore(String comment, String codeContext, CommentTypeAnalyzer.CommentType type) throws Exception {
-        String typeSpecificPrompt = switch (type) {
-            case METHOD_COMMENT -> """
-                Analyze this method comment (score 1-5):
-                1. Does it describe the method's purpose?
-                2. Are parameters documented?
-                3. Is return value explained?
-                4. Are exceptions documented?
-                5. Is the explanation clear and accurate?
-                """;
-            case CLASS_COMMENT -> """
-                Analyze this class comment (score 1-5):
-                1. Does it explain class purpose?
-                2. Are class responsibilities clear?
-                3. Is inheritance/implementation explained?
-                4. Are important class features documented?
-                5. Is it well-structured and complete?
-                """;
-            case FILE_COMMENT -> """
-                Analyze this file-level comment (score 1-5):
-                1. Does it describe file purpose?
-                2. Is copyright/license info included?
-                3. Are package details explained?
-                4. Is version/author information present?
-                5. Is it properly formatted?
-                """;
-            default -> """
-                Analyze this code comment (score 1-5):
-                1. Is it clear and understandable?
-                2. Does it add valuable information?
-                3. Is it accurate and up-to-date?
-                4. Does it follow good practices?
-                5. Is it properly formatted?
-                """;
-        };
-
-        String prompt = String.format("""
-            %s
-            
-            Comment:
-            %s
-            
-            Related Code:
-            %s
-            
-            Respond with only a number 1-5.
-            """, typeSpecificPrompt, comment, codeContext);
-
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(ollamaEndpoint))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
-                .put("model", "deepseek-r1:7b")
-                .put("prompt", prompt)
-                .put("temperature", 0.1)
-                .put("stream", false)
-                .toString()))
-            .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        JSONObject jsonResponse = new JSONObject(response.body());
-        String responseText = jsonResponse.getString("response").trim();
-        
+    private double getAIScore(String comment, String codeContext, CommentTypeAnalyzer.CommentType type) {
         try {
-            return Double.parseDouble(responseText) / 5.0;
-        } catch (NumberFormatException e) {
+            String response = ollamaClient.generateAnalysis(comment);
+            try {
+                return Double.parseDouble(response.trim()) / 5.0;
+            } catch (NumberFormatException e) {
+                return 0.5;
+            }
+        } catch (Exception e) {
             return 0.5;
         }
     }
 
-    // [Previous evaluation methods remain the same]
-
-    public static class QualityAnalysisResult {
-        private final double score;
-        private final String details;
-
-        public QualityAnalysisResult(double score, String details) {
-            this.score = score;
-            this.details = details;
-        }
-
-        public double getScore() { return score; }
-        public String getDetails() { return details; }
-    }
     private double evaluateCoherenceAndCompleteness(String comment, CommentTypeAnalyzer.CommentType type) {
         double score = 0.0;
 
@@ -216,5 +138,18 @@ public class CodeQualityAnalyzer {
 
     private boolean containsTechnicalTerms(String comment) {
         return comment.matches("(?i).*(method|class|function|return|parameter|variable|object|interface).*");
+    }
+
+    public static class QualityAnalysisResult {
+        private final double score;
+        private final String details;
+
+        public QualityAnalysisResult(double score, String details) {
+            this.score = score;
+            this.details = details;
+        }
+
+        public double getScore() { return score; }
+        public String getDetails() { return details; }
     }
 }

@@ -15,6 +15,40 @@ public class OllamaClient {
         this.baseUrl = baseUrl;
     }
 
+    public String generateAnalysis(String comment) {
+        try {
+            String prompt = String.format("""
+                Analyze this code comment and provide insights:
+                %s
+                
+                Consider:
+                1. Comment clarity and completeness
+                2. Technical accuracy
+                3. Documentation standards
+                4. Suggested improvements
+                
+                Provide a concise analysis.
+                """, comment);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/api/generate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
+                    .put("model", "deepseek-r1:7b")
+                    .put("prompt", prompt)
+                    .put("stream", false)
+                    .toString()))
+                .build();
+
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            JSONObject jsonResponse = new JSONObject(response.body());
+            return jsonResponse.getString("response");
+        } catch (Exception e) {
+            return "Failed to analyze comment: " + e.getMessage();
+        }
+    }
+
+
     public String generateComment(String code) {
         try {
             String prompt = String.format("""
@@ -34,7 +68,7 @@ public class OllamaClient {
                 .uri(URI.create(baseUrl + "/api/generate"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
-                    .put("model", "qwen:7b")
+                    .put("model", "deepseek-r1:7b")
                     .put("prompt", prompt)
                     .put("stream", false)
                     .toString()))
